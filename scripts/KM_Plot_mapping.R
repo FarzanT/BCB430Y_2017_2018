@@ -1,6 +1,8 @@
 # KM_Plot_mapping.R
-download.file("http://kmplot.com/analysis/studies/probe%20sets%20to%20genes.txt", "KMplot_probedata.txt")
-kmp <- fread("KMplot_probedata.txt", header = F)
+require(data.table)
+require(DESeq2)
+# download.file("http://kmplot.com/analysis/studies/probe%20sets%20to%20genes.txt", "KMplot_probedata.txt")
+# kmp <- fread("KMplot_probedata.txt", header = F)
 
 brca_parad <- readRDS("Paradoxical_Genes/DESeq2_paradoxical_TCGA-BRCA.rds")
 brca_mirna <- readRDS("miRNA_Differential_Expression/DESeq2_miRNA_TCGA-BRCA.rds")
@@ -11,7 +13,7 @@ cur_data <- gene_dict[ensembl_gene_id %in% brca_parad$over_exp_parad,
               c("ensembl_gene_id", "external_gene_name")]
 
 # Print (UP) paradoxical genes in BRCA
-cat(cur_data$external_gene_name, sep = ",")
+cat(unique(cur_data$external_gene_name), sep = ",")
 # Print deregulated miRNAs in BRCA
 cur_results <-
     results(
@@ -29,4 +31,4 @@ cat(dereg_mirna, sep = ",")
 # Convert to probe ids
 cur_sub <- kmp[V2 %in% cur_data$external_gene_name]
 # Select the first 65
-cat(cur_sub$V1[1:65], sep = "\n")
+cat(cur_sub$V1[1:30], sep = "\n")

@@ -3,6 +3,7 @@ if (!require(data.table)) {
     install.packages("data.table")
     library(data.table)
 }
+setDTthreads(16)
 if (!require(stringr)) {
     install.packages("stringr")
     library(stringr)
@@ -86,28 +87,28 @@ genome_gr <-
         start.field = "start_position",
         end.field = "end_position")
 
-
 dir.create("CNA_Genome_Overlaps")
 
 analyze_cna <- function(idx) {
     # Load the CNV file
-    cnvMatrix <- as.data.table(get(load(all_files[idx])))
+    cur_cnv <- as.data.table(get(load(all_files[idx])))
+    rm("data")
     # TODO: REMOVE
-    # cnvMatrix <- cnvMatrix[1:1000,]
+    # cur_cnv <- cur_cnv[1:1000,]
     
-    cnvMatrix[Chromosome == "X"]$Chromosome <- 23
+    cur_cnv[Chromosome == "X"]$Chromosome <- 23
     # Drop Num_Probes column
-    cnvMatrix <- cnvMatrix[, c(1, 2, 3, 4, 6)]
+    cur_cnv <- cur_cnv[, c(1, 2, 3, 4, 6)]
     
     # Discard invalid sequences with negative width
-    cnvMatrix <- cnvMatrix[End > Start]
+    cur_cnv <- cur_cnv[End > Start]
     
     # Get the project name
     proj <- gsub(pattern = ".*//(TCGA-\\w{1,4})_.*",
                  replacement = "\\1",
                  x = all_files[idx])
     
-    sample_names <- unique(cnvMatrix$Sample)
+    sample_names <- unique(cur_cnv$Sample)
     sample_split <- str_split_fixed(sample_names, "-", n = 7)
     # Get tissue type
     sample_type <- as.integer(gsub(pattern = "(\\d\\d)\\w",
@@ -127,12 +128,16 @@ analyze_cna <- function(idx) {
     
     # Create a 'dictionary'
     all_samples <- data.table(aliquot_id = sample_names, type = sample_type)
+    # Only keep NT and TP samples
+    all_samples <- all_samples[type %in% c("NT", "TP")]
+    
+    cur_cnv <- cur_cnv[Sample %in% all_samples$aliquot_id]
     
     # Find overlaps of each sample separately for less memory usage
     # sample <- all_samples$aliquot_id[1]
     find_ov <- function(sample) {
         cur_sample <- makeGRangesFromDataFrame(
-            df = cnvMatrix[Sample == sample],
+            df = cur_cnv[Sample == sample],
             keep.extra.columns = T,
             seqnames.field = "Chromosome",
             start.field = "Start",
@@ -162,8 +167,9 @@ analyze_cna <- function(idx) {
         all_overlaps[[i]] <- find_ov(i)
     }
     
+    rm("cur_cnv")
     # Merge all columns
-    # NOTE: THE FOLLOWING COMMAND TAKES A LONG TIME TO PROCESS, LOAD SAVED RESTULTS
+    # NOTE: THE FOLLOWING COMMAND TAKES A LONG TIME TO PROCESS, LOAD SAVED RESULTS
     # WHEN AVAILABLE
     system.time({
         all <- Reduce(function(...) merge(..., by = c("seqnames", "start", "end")), all_overlaps)
@@ -181,6 +187,7 @@ analyze_cna <- function(idx) {
                         alternative = "greater")$p.value
         return(data.table(less = less, greater = greater))
     }
+    gc()
     # Compile and execute
     wc_func <- compiler::cmpfun(wc_func)
     system.time({
@@ -188,7 +195,7 @@ analyze_cna <- function(idx) {
             X = 1:nrow(all),
             FUN = wc_func,
             mc.preschedule = T,
-            mc.cores = detectCores(),
+            mc.cores = 16,
             mc.cleanup = T
         )
         wc_results <- rbindlist(wc_results)
@@ -212,13 +219,13 @@ analyze_cna <- function(idx) {
     
     # Find the genes in significant segments:
     all_less_gr <- tryCatch(expr = {
-        makeGRangesFromDataFrame(df = all[wilcox_p_less_adj <= 0.1,
+        makeGRangesFromDataFrame(df = all[wilcox_p_less_adj <= 0.01,
                                           c("seqnames", "start", "end"), with = F],
                                                 seqnames.field = "seqnames")
     }, error = function(...) return(NULL))
     
     all_grtr_gr <- tryCatch(expr = {
-        makeGRangesFromDataFrame(df = all[wilcox_p_grtr_adj < 0.1,
+        makeGRangesFromDataFrame(df = all[wilcox_p_grtr_adj < 0.01,
                                           c("seqnames", "start", "end")],
                                  seqnames.field = "seqnames")
     }, error = function(...) return(NULL))
@@ -248,7 +255,7 @@ analyze_cna <- function(idx) {
 analyze_cna <- compiler::cmpfun(analyze_cna)
 
 system.time({
-    for (i in 1:length(all_files)) {
+    for (i in 7:length(all_files)) {
         cat("Working on ", all_files[i], "\n")
         analyze_cna(i)
         gc()
@@ -304,20 +311,74 @@ mc.results <-
     )
 
 
-# if (!file.exists("SNP6_probeset.zip"))
-#     probset_address <- "https://gdc.cancer.gov/files/public/file/snp6.na35.liftoverhg38.txt.zip"
-# download.file(probset_address, destfile = "SNP6_probset.zip")
-# unzip(zipfile = "SNP6_probset.zip")
-# probset <- fread("snp6.na35.liftoverhg38.txt")
-# 
-# colnames(cnvMatrix) <- c("Sample Name", "Chromosome", "Start", "End", "Num of Markers", "Segment_Mean")
-# colnames(probset) <- c("Probe Name", "Chromosome", "Start", "Strand", "Type", "FreqCNV", "Par")
-# # Convert sex chromosomes to numbers
-# probset[Chromosome == "X", "Chromosome"] <- "23"
-# probset[Chromosome == "Y", "Chromosome"] <- "24"
-# probset$Chromosome <- as.integer(probset$Chromosome)
-# 
-# probeMarkers <- load_markers(marker_matrix = probset)
-# 
-# curCNVobj <- load_cnv(segmentation_matrix = cnvMatrix,
-#                       markers_list = probeMarkers, num_of_samples = length(unique(cnvMatrix$`Sample Name`)))
+# ==== Plot the significant genes to contrast with threshold-setting method ====
+brca_cna <- fread("CNA_Genome_Overlaps/TCGA-BRCA_CNA_Genome_Overlap.csv")
+# Find the average segment means, by tissue type
+sample_names <- colnames(brca_cna)[-(1:3)]
+sample_split <- str_split_fixed(sample_names, "-", n = 7)
+# Get tissue type
+sample_type <- as.integer(gsub(pattern = "(\\d\\d)\\w",
+                               replacement = "\\1",
+                               x = sample_split[, 4]
+))
+
+# Annotate samples based on type
+# TP: Solid tumor 1
+# TM: Metastatic 6
+# NB: Blood derived normal 10
+# NT: Solid Tissue normal 11
+sample_type[sample_type == 1] <- "TP"
+sample_type[sample_type == 6] <- "TM"
+sample_type[sample_type == 10] <- "NB"
+sample_type[sample_type == 11] <- "NT"
+NT_idx <- which(sample_type == "NT")
+TP_idx <- which(sample_type == "TP")
+
+# Order by chromosome number and start position
+data.table::setorder(x = brca_cna, seqnames, start)
+# Add index
+brca_cna$index <- 1:nrow(brca_cna)
+# Find the indices of the last gene on each chromosome
+chrom_lines <- vector(length = 23, mode = "integer")
+for (i in 1:23) {
+    chrom_lines[i] <- which(brca_cna$seqnames == i)[1]
+}
+chrom_lines <- c(chrom_lines, nrow(brca_cna))
+
+png(filename = paste0("CNA_Plots/DESeq2_SegMean_Paradoxical_Extra", proj, ".png"),
+    res = 220, height = 1000, width = 2000)
+par(pch = 20)
+# cna_genes$color[cna_genes$color == "black"] <- "white"
+# cna_genes$color[cna_genes$color == "green"] <- "black"
+brca_cna$color <- "black"
+brca_cna[wilcox_p_less_adj <= 0.01]$color <- "red"
+brca_cna[wilcox_p_grtr_adj <= 0.01]$color <- "red"
+
+# brca_cna$color[brca_cna$ensembl_gene_id %in% deseq_under_par] <- "red"
+# Find median by type
+brca_cna[, NT_median := median(unlist(.SD), na.rm = T),
+               by = c("start", "end", "seqnames"), .SDcols = NT_idx + 3]
+brca_cna[, TP_median := median(unlist(.SD), na.rm = T),
+               by = c("start", "end", "seqnames"), .SDcols = TP_idx + 3]
+
+plot(x = brca_cna$index, y = brca_cna$NT_median, pch = 20,
+     col = "blue", xaxt = "n", ylab = "", cex = 0.1,
+     xlab = "", ylim = c(-.5, .5))
+points(x = brca_cna$index, y = brca_cna$TP_median, pch = 20,
+       cex = 0.1, col = "black")
+points(x = brca_cna[color == "red"]$index,
+       y = brca_cna[color == "red"]$TP_median,
+       col = "red", cex = 0.1, pch = 20)
+for (i in 1:length(chrom_lines)) {
+    abline(v = chrom_lines[i], col = "black", lwd = 0.1)
+}
+text(labels = chromosome_names,
+     x = ((chrom_lines + chrom_lines[-1])/2)[-24],
+     y = 0.55, srt = 45, xpd = T, adj = 0, cex = 0.6)
+abline(h = log2(2/2), col = "red", lwd = 0.5)
+
+title(main = paste0("Map of aberrated regions across the genome in project TCGA-BRCA"),
+      ylab = "Medians of segment mean", mgp = c(2,0,1),
+      xlab = paste0("Mann-Whitney paired test p-values less than 0.01 are highlighted in red"))
+dev.off()
+

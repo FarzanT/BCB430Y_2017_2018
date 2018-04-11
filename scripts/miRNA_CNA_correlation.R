@@ -208,6 +208,7 @@ for (i in 4:length(cna_files)) {
 mirna_cna_files <- list.files("miRNA_CNA_Correlation/", full.names = T)
 mirna_difex_files <- list.files("miRNA_Differential_Expression/", full.names = T)
 
+idx = 1
 cur_func <- function(idx) {
     proj <- gsub(pattern = ".*(TCGA-\\w{1,4})\\.rds",
                  replacement = "\\1",
@@ -232,6 +233,10 @@ cur_func <- function(idx) {
                                              x = mirna_cna_files, fixed = T)])
     
     up_mirna %in% cur_mirna_cna$gain
+    up_mirna %in% cur_mirna_cna$loss
+    
+    down_mirna %in% cur_mirna_cna$gain
+    down_mirna %in% cur_mirna_cna$loss
     
     
 }

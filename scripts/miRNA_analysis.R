@@ -229,7 +229,7 @@ mc.results <-
         FUN = mirna_analysis,
         mc.preschedule = T,
         mc.cores = detectCores(),
-        min_lfc = 2,
+        min_lfc = 1,
         p_value = 0.01
     )
 
@@ -238,12 +238,12 @@ mc.results <-
 mirdip <- fread("Fa_Ta_mirDIP_v_3_1520371014/Unique_mirdip.txt")
 
 # Convert the target entrez IDs to ensembl IDs
-gene_dict <- fread("gene_dictionary.txt")
-gene_dict[entrezgene %in% humanMirnaTargets[[1]]]$ensembl_gene_id
-humanMirnaTargets <- lapply(
-    X = humanMirnaTargets,
-    FUN = function(x) {gene_dict[entrezgene %in% x]$ensembl_gene_id}
-)
+# gene_dict <- fread("gene_dictionary.txt")
+# gene_dict[entrezgene %in% humanMirnaTargets[[1]]]$ensembl_gene_id
+# humanMirnaTargets <- lapply(
+#     X = humanMirnaTargets,
+#     FUN = function(x) {gene_dict[entrezgene %in% x]$ensembl_gene_id}
+# )
 
 # ==== Check whether paradoxical genes are targets of deregulated miRNAs ====
 dereg_mirna <- list.files("Signif_miRNA/", full.names = T)
@@ -324,10 +324,11 @@ paradoxical_analysis <- function(idx, min_lfc, p_value) {
     # m	- the number of white balls in the urn.
     # n	- the number of black balls in the urn.
     # k	- the number of balls drawn from the urn.
-    p_hyp_geom_test <- 1 - phyper(q = over_target_size + under_target_size,
+    p_hyp_geom_test <- phyper(q = over_target_size + under_target_size,
                                   k = length(unlist(cur_paradox)),
                                   m = length(dereg_genes),
-                                  n = nrow(cur_gene_exp) - length(dereg_genes))
+                                  n = nrow(cur_gene_exp) - length(dereg_genes),
+                                  log.p = F, lower.tail = F)
     
     return(data.table(proj = proj, dereg_ratio = dereg_ratio, over_target_size = over_target_size,
                under_target_size = under_target_size,
@@ -341,11 +342,14 @@ mc.results <- mclapply(
     FUN = paradoxical_analysis,
     mc.preschedule = F,
     mc.cores = 16,
-    min_lfc = 2,
+    min_lfc = 1,
     p_value = 0.01
 )
 
 mc.results <- mc.results[-6]
 all_results <- rbindlist(mc.results)
+
+all_results$p_hyp_geom_test <- signif(all_results$p_hyp_geom_test, 4)
+all_results$dereg_ratio <- signif(all_results$dereg_ratio, 4)
 
 fwrite(all_results, "HyperGeom_Ratio_miRNA_targets.csv")
